@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <canvas id="surface" width="512" height="512"></canvas>
+    <!-- using type = "module" attribute to be able to use top-level awaits -->
+    <script type="module">
+        const canvas = document.getElementById("surface");
+        //check if the user's browser can use WebGPU.
+        if(!navigator.gpu){
+            throw new Error("Your browser doesn't support WebGPU.");
+        }
+        //if WebGPU is supported start by requesting a GPUAdapter.
+        //this GPUAdapter is a representation of a specific part of GPU hardware in your computer.
+        const adapter = await navigator.gpu.requestAdapter();//this returns a promise, so we await it
+        if(!adapter){
+            throw new Error("No GPU adapter found.");
+        }
+        //if you successfully got an adapter you need to request a GPU device
+        //the device is the interface through which most of the interaction with the GPU happens.
+        const device = await adapter.requestDevice();
+        if(!device){
+            throw new Error("No GPU device found.");
+        }
+        //now that you have a GPU device you need to configure the canvas so that the device can draw on it
+        //the canvas context needs to be associated with the device using the .configure() method from context object
+        const context = canvas.getContext("webgpu");
+        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({
+            device,
+            format: canvasFormat,//format refers to the texture format that the context should use
+        });
+        //clearing the canvas with a color
+        //to do anything with the GPU you need to provide commands to the GPU telling it what to do.
+        //to create commands create a GPUCommandEncoder through the GPU device.
+        const encoder = device.createCommandEncoder();
+
+        //Render passes are when all drawing operations in WebGPU happen
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [{
+                view: context.getCurrentTexture().createView(),//texture
+                clearValue: {r:1,g:0,b:0,a:0.5},//sets the color to clear the canvas with, (red, green, blue, alpha/opacity) ranges 0-1
+                loadOp: "clear",//indicate that you want the  texture to be cleared when the render pass starts
+                storeOp: "store",//indicate that you want to save into the texture the results of any drawing done during the render pass
+            }]
+        });
+        pass.end();
+        //calling beginRenderPass() encoder method and end() render method does not cause GPU to do anything
+        //they're just recording the commands for the GPU to do later.
+        //create a command buffer to deliver the commands to the GPU to perform.
+        const commandBuffer = encoder.finish();
+        //submit the command buffer to the GPU using the queue of GPUDevice
+        device.queue.submit([commandBuffer]);//it is passed as an array of command buffers, this time it's only a command to clear the screen with a color
+        //once you submit a command buffer, it cannot be used again, so there's no need to hold on to it. 
+
+    </script>
+</body>
+</html>
