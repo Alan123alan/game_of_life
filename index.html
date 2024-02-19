@@ -24,12 +24,84 @@
         //the device is the interface through which most of the interaction with the GPU happens.
         const device = await adapter.requestDevice();
         if(!device){
-            throw new Error("No GPU device found.");
-        }
-        //now that you have a GPU device you need to configure the canvas so that the device can draw on it
-        //the canvas context needs to be associated with the device using the .configure() method from context object
+            throw new Error("No GPU device found."); } //now that you have a GPU device you need to configure the canvas so that the device can draw on it //the canvas context needs to be associated with the device using the .configure() method from context object
         const context = canvas.getContext("webgpu");
         const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+        //GPUs work in terms of triangles so to represent a square with the vertices 
+        /*[            
+            //X, Y
+            -0.8,-0.8,
+            0.8,-0.8,
+            0.8,0.8,
+            -0.8,0.8
+        ]*/
+        //You need to provide the vertices in groups of three, which describe the three vertices of each triangle
+        /*[            
+            //V1,      V2,      V3
+            //X1 Y1    X2  Y2   X3   Y3
+            -0.8,-0.8, 0.8,0.8, -0.8,0.8//triangle 1
+            -0.8,-0.8, 0.8,-0.8, 0.8,-0.8//triangle 2
+        ]*/
+        const vertices = new Float32Array([
+            //V1,      V2,      V3
+            //X1 Y1    X2  Y2   X3   Y3
+            -0.8,-0.8, 0.8,-0.8, 0.8,0.8,//triangle 1
+            -0.8,-0.8, 0.8,0.8, -0.8,0.8//triangle 2
+        ]);
+        //GPU can't draw vertices with data from Javascript arrays, for any data to be used by GPU
+        //while it draws, it needs to be accessed from the GPU rendering optimized memory
+        //The GPU API for doing this is the GPUBuffer
+        const vertexBuffer = device.createBuffer({
+            label: "cell vertices",//label for the buffer, labels are used in WebGPU error messages
+            size: vertices.byteLength,//give the size for the buffer in bytes, size for float32 == 4 bytes, # of float32 in vertices array == 12, 12x4 == 48 bytes
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,//specify the usage of the buffer, making buffer usable for vertex data and enable copying data into it
+        });
+        //You Can't resize a buffer after it's been created nor can you change usage flags, only able to change its memory contents
+        //copy the vertices into the newly created buffer
+        device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices)
+        //vertices data is now copied into the buffer, but for GPU is just random blob of bytes
+        //define vertex data structure with a GPUVertexBufferLayout dictionary
+        const vertexBufferLayout = {
+            arrayStride: 8,//this is the number of bytes GPU needs to skip forward in buffer when looking for next vertex, two (float32 = 4 bytes) per vertex coordinate (x,y) == 8 bytes to skip
+            attributes: [{
+                format: "float32x2",//each vertice is made up of 2 float32, if they were made up of 4 float32 you would use "float32x4"
+                offset: 0,//how many bytes into the buffer this particular attribute starts? it's the first attribute so from the 0th byte
+                shaderLocation: 0,//This is an arbitrary number between 0 and 15 and must be unique for every attribute that you define
+            }],
+        };
+        const cellShaderModule = device.createShaderModule({
+            label: "cell shader",
+            code: `
+            @vertex
+            fn vertexMain(@location(0) pos: vec2f) -> @builtin(position) vec4f{
+            //@location(0) because only one attribute in the vertexBufferLayout?
+                return vec4f(pos.x,pos.y,0,1);//(x,y,z,w)
+            }
+            @fragment
+            fn fragmentMain() -> @location(0) vec4f{
+            //@location(0) because only one color attachment in the render pass?
+                return vec4f(0, 0, 1, 1);//(red, green, blue, alpha)
+            }
+            `,
+        });
+        //a shader module can't be used for rendering on it's own
+        //you have to use it as part of a GPURenderPipeline,
+        const renderPipeline = device.createRenderPipeline({
+            label: "cell pipeline",
+            layout: "auto",//describes what types of inputs (other than vertex buffers) the pipeline needs
+            vertex: {
+                module: cellShaderModule,
+                entryPoint: "vertexMain",
+                buffers: [vertexBufferLayout],
+            },
+            fragment: {
+                module: cellShaderModule,
+                entryPoint: "fragmentMain",
+                targets: [{
+                    format: canvasFormat
+                }]
+            }
+        });
         context.configure({
             device,
             format: canvasFormat,//format refers to the texture format that the context should use
@@ -48,6 +120,9 @@
                 storeOp: "store",//indicate that you want to save into the texture the results of any drawing done during the render pass
             }]
         });
+        pass.setPipeline(renderPipeline);
+        pass.setVertexBuffer(0, vertexBuffer);
+        pass.draw(vertices.length / 2);
         pass.end();
         //calling beginRenderPass() encoder method and end() render method does not cause GPU to do anything
         //they're just recording the commands for the GPU to do later.
@@ -57,6 +132,22 @@
         device.queue.submit([commandBuffer]);//it is passed as an array of command buffers, this time it's only a command to clear the screen with a color
         //once you submit a command buffer, it cannot be used again, so there's no need to hold on to it. 
 
+        //NOTES
+        /*
+        You don't have to repeat the vertex data in order to make triangles. 
+        Using something called Index Buffers, you can feed a separate list of values to the GPU 
+        that tells it what vertices to connect together into triangles so that they don't need to be duplicated. 
+
+
+        Shaders are small programs that you write and that execute on your GPU. Each shader operates on a different stage of the data: 
+        Vertex processing, Fragment processing, or general Compute. Because they're on the GPU, they are structured more rigidly than your average JavaScript.
+        But that structure allows them to execute very fast and, crucially, in parallel!
+
+
+        Shaders in WebGPU are written in a shading language called WGSL (WebGPU Shading Language). 
+        WGSL is, syntactically, a bit like Rust, with features aimed at making common types of GPU work (like vector and matrix math) easier and faster.
+        WebGPU Shading Language: https://gpuweb.github.io/gpuweb/wgsl/
+        */
     </script>
 </body>
 </html>
