@@ -9,7 +9,7 @@
     <canvas id="surface" width="512" height="512"></canvas>
     <!-- using type = "module" attribute to be able to use top-level awaits -->
     <script type="module">
-        const GRID_SIZE = 4;//a constant to keep track of the grid size
+        const GRID_SIZE = 32;//a constant to keep track of the grid size
         const canvas = document.getElementById("surface");
         //check if the user's browser can use WebGPU.
         if(!navigator.gpu){
@@ -89,11 +89,11 @@
             //defining an uniform in the shader module called 'grid'
             @group(0) @binding(0) var<uniform> grid: vec2f;
             @vertex
-            fn vertexMain(@location(0) pos: vec2f) -> @builtin(position) vec4f{
+            fn vertexMain(@location(0) pos: vec2f, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f{
             //@location(0) because only one attribute in the vertexBufferLayout?
                 //pos(x,y) and grid(x,y) are 2D vectors WGSL performs an element wise division (pos.x/grid.x, pos.y/grid.y)
                 //the division between pos and grid means that whatever n is GRID_SIZE will be the number of rows and cols in grid
-                let cell = vec2f(3,1);
+                let cell = vec2f(floor(f32(instance) / grid.x),(f32(instance) % grid.y));//map 0-15,0-15 -> 0-3,0-3 | /grid.x floor division for x, %grid.y modulo for y 
                 let offset = cell * (2 / grid);//this offset (a full grid) is to be used once the pos has been scaled and translated and maps user defined coordinates to grid squares in clip space
                 let new_pos = (pos / grid) + (1 / grid);//this takes the position of the origin from which vertices are drawn and we offset them by half grid cell in (x,y)
                 let new_pos_x = new_pos.x - 1;//this takes the origin with half grid offset and moves it in x to the start of clip space
@@ -162,7 +162,7 @@
         pass.setPipeline(renderPipeline);
         pass.setVertexBuffer(0, vertexBuffer);
         pass.setBindGroup(0, bindGroup);//the 0 passed as the first argument refers to @group(0) in the shader code
-        pass.draw(vertices.length / 2);
+        pass.draw(vertices.length / 2, GRID_SIZE*GRID_SIZE);
         pass.end();
         //calling beginRenderPass() encoder method and end() render method does not cause GPU to do anything
         //they're just recording the commands for the GPU to do later.
