@@ -9,6 +9,7 @@
     <canvas id="surface" width="512" height="512"></canvas>
     <!-- using type = "module" attribute to be able to use top-level awaits -->
     <script type="module">
+        const GRID_SIZE = 4;//a constant to keep track of the grid size
         const canvas = document.getElementById("surface");
         //check if the user's browser can use WebGPU.
         if(!navigator.gpu){
@@ -50,13 +51,13 @@
         ]);
         //GPU can't draw vertices with data from Javascript arrays, for any data to be used by GPU
         //while it draws, it needs to be accessed from the GPU rendering optimized memory
-        //The GPU API for doing this is the GPUBuffer
+        //the GPU API for doing this is the GPUBuffer
         const vertexBuffer = device.createBuffer({
             label: "cell vertices",//label for the buffer, labels are used in WebGPU error messages
             size: vertices.byteLength,//give the size for the buffer in bytes, size for float32 == 4 bytes, # of float32 in vertices array == 12, 12x4 == 48 bytes
             usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,//specify the usage of the buffer, making buffer usable for vertex data and enable copying data into it
         });
-        //You Can't resize a buffer after it's been created nor can you change usage flags, only able to change its memory contents
+        //you Can't resize a buffer after it's been created nor can you change usage flags, only able to change its memory contents
         //copy the vertices into the newly created buffer
         device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices)
         //vertices data is now copied into the buffer, but for GPU is just random blob of bytes
@@ -69,13 +70,35 @@
                 shaderLocation: 0,//This is an arbitrary number between 0 and 15 and must be unique for every attribute that you define
             }],
         };
+
+        //creating uniforms array
+        const uniforms = new Float32Array([GRID_SIZE, GRID_SIZE]);
+        //creating uniform buffer to provide the grid size to the shader as uniforms
+        //normally when you pass a vertex buffer to a vertex shader every invocation of the vertex shader takes a different value from the vertex buffer
+        //this is different from uniforms which is a value from a buffer that is the same for every invocation of the vertex shader
+        const uniformBuffer = device.createBuffer({
+            label: "grid uniforms",
+            size: uniforms.byteLength,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(uniformBuffer, 0, uniforms);
+
         const cellShaderModule = device.createShaderModule({
             label: "cell shader",
             code: `
+            //defining an uniform in the shader module called 'grid'
+            @group(0) @binding(0) var<uniform> grid: vec2f;
             @vertex
             fn vertexMain(@location(0) pos: vec2f) -> @builtin(position) vec4f{
             //@location(0) because only one attribute in the vertexBufferLayout?
-                return vec4f(pos.x,pos.y,0,1);//(x,y,z,w)
+                //pos(x,y) and grid(x,y) are 2D vectors WGSL performs an element wise division (pos.x/grid.x, pos.y/grid.y)
+                //the division between pos and grid means that whatever n is GRID_SIZE will be the number of rows and cols in grid
+                let cell = vec2f(3,1);
+                let offset = cell * (2 / grid);//this offset (a full grid) is to be used once the pos has been scaled and translated and maps user defined coordinates to grid squares in clip space
+                let new_pos = (pos / grid) + (1 / grid);//this takes the position of the origin from which vertices are drawn and we offset them by half grid cell in (x,y)
+                let new_pos_x = new_pos.x - 1;//this takes the origin with half grid offset and moves it in x to the start of clip space
+                let new_pos_y = new_pos.y - 1;//this takes the origin with half grid offset and moves it in y to the start of clip space
+                return vec4f(new_pos_x + offset.x, new_pos_y + offset.y, 0, 1);//(x,y,z,w);
             }
             @fragment
             fn fragmentMain() -> @location(0) vec4f{
@@ -84,6 +107,7 @@
             }
             `,
         });
+
         //a shader module can't be used for rendering on it's own
         //you have to use it as part of a GPURenderPipeline,
         const renderPipeline = device.createRenderPipeline({
@@ -102,6 +126,21 @@
                 }]
             }
         });
+
+        //the uniform declared in the shader code won't bind itself to the uniform buffer created
+        //to accomplish this you need to create and set a bind group, which is a collection of resources that
+        //you want to make accessible to your shader at the same time
+        const bindGroup = device.createBindGroup({
+            label: "cell renderer bind group",
+            layout: renderPipeline.getBindGroupLayout(0),
+            entries: [{//each entry is a dictionary with at least the following properties
+                binding: 0,//binding corresponds with the @binding() added to the shader code, in this case @binding(0)
+                resource: {buffer: uniformBuffer},//the actual resource that you want to expose to the variable at the specified binding index
+            }],
+        });
+        //you can't change the resources that a bind group points to after it's been created, but you can change the contents of those resources
+        //you can for example change the uniform buffer to contain a new grid size which is reflected in future draw calls using this bind group
+
         context.configure({
             device,
             format: canvasFormat,//format refers to the texture format that the context should use
@@ -122,6 +161,7 @@
         });
         pass.setPipeline(renderPipeline);
         pass.setVertexBuffer(0, vertexBuffer);
+        pass.setBindGroup(0, bindGroup);//the 0 passed as the first argument refers to @group(0) in the shader code
         pass.draw(vertices.length / 2);
         pass.end();
         //calling beginRenderPass() encoder method and end() render method does not cause GPU to do anything
