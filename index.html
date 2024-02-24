@@ -86,24 +86,33 @@
         const cellShaderModule = device.createShaderModule({
             label: "cell shader",
             code: `
+            struct VertexInput {
+                @location(0) pos: vec2f,//@location(0) because only one attribute in the vertexBufferLayout?
+                @builtin(instance_index) instance: u32,
+            };
+            struct VertexOutput{
+                @builtin(position) pos: vec4f,
+                @location(0) cell: vec2f,//@location(0) because only one color attachment in the render pass?
+            };
             //defining an uniform in the shader module called 'grid'
-            @group(0) @binding(0) var<uniform> grid: vec2f;
+            @group(0) @binding(0) var<uniform> grid: vec2f;//this grid works as a global definition just as the VertexInput and VertexOutput structs
             @vertex
-            fn vertexMain(@location(0) pos: vec2f, @builtin(instance_index) instance: u32) -> @builtin(position) vec4f{
-            //@location(0) because only one attribute in the vertexBufferLayout?
+            fn vertexMain(input: VertexInput) -> VertexOutput{
                 //pos(x,y) and grid(x,y) are 2D vectors WGSL performs an element wise division (pos.x/grid.x, pos.y/grid.y)
                 //the division between pos and grid means that whatever n is GRID_SIZE will be the number of rows and cols in grid
-                let cell = vec2f(floor(f32(instance) / grid.x),(f32(instance) % grid.y));//map 0-15,0-15 -> 0-3,0-3 | /grid.x floor division for x, %grid.y modulo for y 
+                let cell = vec2f(floor(f32(input.instance) / grid.x),(f32(input.instance) % grid.y));//map 0-15,0-15 -> 0-3,0-3 | /grid.x floor division for x, %grid.y modulo for y 
                 let offset = cell * (2 / grid);//this offset (a full grid) is to be used once the pos has been scaled and translated and maps user defined coordinates to grid squares in clip space
-                let new_pos = (pos / grid) + (1 / grid);//this takes the position of the origin from which vertices are drawn and we offset them by half grid cell in (x,y)
+                let new_pos = (input.pos / grid) + (1 / grid);//this takes the position of the origin from which vertices are drawn and we offset them by half grid cell in (x,y)
                 let new_pos_x = new_pos.x - 1;//this takes the origin with half grid offset and moves it in x to the start of clip space
                 let new_pos_y = new_pos.y - 1;//this takes the origin with half grid offset and moves it in y to the start of clip space
-                return vec4f(new_pos_x + offset.x, new_pos_y + offset.y, 0, 1);//(x,y,z,w);
+                var output: VertexOutput;
+                output.pos = vec4f(new_pos_x + offset.x, new_pos_y + offset.y, 0, 1);
+                output.cell = cell;
+                return output;//(x,y,z,w)
             }
             @fragment
-            fn fragmentMain() -> @location(0) vec4f{
-            //@location(0) because only one color attachment in the render pass?
-                return vec4f(0, 0, 1, 1);//(red, green, blue, alpha)
+            fn fragmentMain(input: VertexOutput) -> @location(0) vec4f{
+                return vec4f(input.cell.x/grid.x, input.cell.y/grid.y, 1 - (input.cell.x/grid.x), 1);//(red, green, blue, alpha);
             }
             `,
         });
@@ -154,7 +163,7 @@
         const pass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: context.getCurrentTexture().createView(),//texture
-                clearValue: {r:1,g:0,b:0,a:0.5},//sets the color to clear the canvas with, (red, green, blue, alpha/opacity) ranges 0-1
+                clearValue: {r:0,g:0,b:0,a:0.5},//sets the color to clear the canvas with, (red, green, blue, alpha/opacity) ranges 0-1
                 loadOp: "clear",//indicate that you want the  texture to be cleared when the render pass starts
                 storeOp: "store",//indicate that you want to save into the texture the results of any drawing done during the render pass
             }]
