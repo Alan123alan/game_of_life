@@ -25,7 +25,8 @@
         //the device is the interface through which most of the interaction with the GPU happens.
         const device = await adapter.requestDevice();
         if(!device){
-            throw new Error("No GPU device found."); } //now that you have a GPU device you need to configure the canvas so that the device can draw on it //the canvas context needs to be associated with the device using the .configure() method from context object
+            throw new Error("No GPU device found."); 
+        } //now that you have a GPU device you need to configure the canvas so that the device can draw on it //the canvas context needs to be associated with the device using the .configure() method from context object
         const context = canvas.getContext("webgpu");
         const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
         //GPUs work in terms of triangles so to represent a square with the vertices 
@@ -55,7 +56,7 @@
         const vertexBuffer = device.createBuffer({
             label: "cell vertices",//label for the buffer, labels are used in WebGPU error messages
             size: vertices.byteLength,//give the size for the buffer in bytes, size for float32 == 4 bytes, # of float32 in vertices array == 12, 12x4 == 48 bytes
-            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,//specify the usage of the buffer, making buffer usable for vertex data and enable copying data into it
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST//specify the usage of the buffer, making buffer usable for vertex data and enable copying data into it
         });
         //you Can't resize a buffer after it's been created nor can you change usage flags, only able to change its memory contents
         //copy the vertices into the newly created buffer
@@ -67,8 +68,8 @@
             attributes: [{
                 format: "float32x2",//each vertice is made up of 2 float32, if they were made up of 4 float32 you would use "float32x4"
                 offset: 0,//how many bytes into the buffer this particular attribute starts? it's the first attribute so from the 0th byte
-                shaderLocation: 0,//This is an arbitrary number between 0 and 15 and must be unique for every attribute that you define
-            }],
+                shaderLocation: 0//This is an arbitrary number between 0 and 15 and must be unique for every attribute that you define
+            }]
         };
 
         //creating uniforms array
@@ -108,12 +109,12 @@
             device.createBuffer({
                 label: "cell state b",
                 size: cellStateArray.byteLength,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
             })
         ];
 
         for (let i = 0; i < cellStateArray.length; i += 3) {
-            cellStateArray[i] = 1;
+            cellStateArray[i] = Math.random() > 0.6? 1: 0;
         }
         device.queue.writeBuffer(cellStateStorage[0], 0, cellStateArray);
 
@@ -155,27 +156,76 @@
             fn fragmentMain(input: VertexOutput) -> @location(0) vec4f{
                 return vec4f(input.cell.x/grid.x, input.cell.y/grid.y, 1 - (input.cell.x/grid.x), 1);//(red, green, blue, alpha);
             }
-            `,
+            `
         });
 
-        //a shader module can't be used for rendering on it's own
-        //you have to use it as part of a GPURenderPipeline,
-        const renderPipeline = device.createRenderPipeline({
-            label: "cell pipeline",
-            layout: "auto",//describes what types of inputs (other than vertex buffers) the pipeline needs
-            vertex: {
-                module: cellShaderModule,
-                entryPoint: "vertexMain",
-                buffers: [vertexBufferLayout],
-            },
-            fragment: {
-                module: cellShaderModule,
-                entryPoint: "fragmentMain",
-                targets: [{
-                    format: canvasFormat
-                }]
+        const WORKGROUP_SIZE = 8;
+
+        const simulationShaderModule = device.createShaderModule({
+            label: "game of life simulation shader",
+            code: `
+            @group(0) @binding(0) var<uniform> grid: vec2f;
+
+            @group(0) @binding(1) var<storage> cellStateIn: array<u32>;//read only storage buffer
+            @group(0) @binding(2) var<storage, read_write> cellStateOut: array<u32>;//allows both read and write to the buffer
+            
+            fn cellIndex(cell :vec2u) -> u32{
+                return (cell.x % u32(grid.x)) * u32(grid.x) + (cell.y % u32(grid.y));
             }
+            //returns 1 if given cell is active, otherwise 0
+            fn isCellActive(x: u32, y:u32)->u32{
+                return cellStateIn[cellIndex(vec2(x,y))];
+            }
+            
+            @compute
+            @workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
+            //global_invocation_id is a three dimensional vector of unsigned integers
+            //it tracks where in the grid of shader invocations you are
+            //you can treat it as the cell index you are going to operate on if grid is 32x32 you get (0,0,0)...(31,31,31)
+            fn computeMain(@builtin(global_invocation_id) cell: vec3u){
+                //determine how many neighbor cells are active
+                let activeNeighbors = isCellActive(cell.x + 1, cell.y) +
+                isCellActive(cell.x - 1, cell.y) +
+                isCellActive(cell.x, cell.y + 1) +
+                isCellActive(cell.x, cell.y - 1) +
+                isCellActive(cell.x + 1, cell.y + 1) +
+                isCellActive(cell.x + 1, cell.y - 1) +
+                isCellActive(cell.x - 1, cell.y + 1) +
+                isCellActive(cell.x - 1, cell.y - 1);
+                let index = cellIndex(cell.xy);
+                if(activeNeighbors < 2){
+                    cellStateOut[index] = 0;
+                }else if(isCellActive(cell.x, cell.y) == 1 && activeNeighbors <= 3){
+                    cellStateOut[index] = 1;
+                }else if(isCellActive(cell.x, cell.y) == 0 && activeNeighbors == 3){
+                    cellStateOut[index] = 1;
+                }else{
+                    cellStateOut[index] = 0;
+                }
+            }
+            `
         });
+
+        const bindGroupLayout = device.createBindGroupLayout({
+            label: "cell bind group layout",
+            entries: [{
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,//be accessible by the vertex and compute shaders
+                //in the buffer object you set what type of buffer is used, the default is the uniform buffer
+                buffer: {}//grid uniform buffer
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE,//be accessible by the vertex and compute shaders
+                buffer: {type: "read-only-storage"}//cell state input buffer
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.COMPUTE,//be accessible by the compute shader
+                buffer: {type: "storage"}//cell state output buffer
+            }]
+        });
+
 
         // //the uniform declared in the shader code won't bind itself to the uniform buffer created
         // //to accomplish this you need to create and set a bind group, which is a collection of resources that
@@ -196,7 +246,7 @@
         const bindGroups = [
             device.createBindGroup({
                 label: "cell renderer bind group a",
-                layout: renderPipeline.getBindGroupLayout(0),
+                layout: bindGroupLayout,
                 entries: [{
                     binding: 0,
                     resource: {buffer: uniformBuffer},
@@ -204,11 +254,15 @@
                 {
                     binding: 1,
                     resource: {buffer: cellStateStorage[0]},
-                }],
+                },
+                {
+                    binding: 2,
+                    resource: {buffer: cellStateStorage[1]},
+                }]
             }),
             device.createBindGroup({
                 label: "cell renderer bind group b",
-                layout: renderPipeline.getBindGroupLayout(0),
+                layout: bindGroupLayout,
                 entries: [{
                     binding: 0,
                     resource: {buffer: uniformBuffer},
@@ -216,15 +270,54 @@
                 {
                     binding: 1,
                     resource: {buffer: cellStateStorage[1]},
-                }],
-            }),
-        ]
+                },
+                {
+                    binding: 2,
+                    resource: {buffer: cellStateStorage[0]},
+                }]
+            })
+        ];
+        
+        //a pipeline layout is a list of bind group layouts
+        const pipelineLayout = device.createPipelineLayout({
+            label: "cell pipeline layout",
+            bindGroupLayouts: [ bindGroupLayout]
+        });
+
+        //a shader module can't be used for rendering on it's own
+        //you have to use it as part of a GPURenderPipeline,
+        const cellPipeline = device.createRenderPipeline({
+            label: "cell pipeline",
+            layout: pipelineLayout,//describes what types of inputs (other than vertex buffers) the pipeline needs
+            vertex: {
+                module: cellShaderModule,
+                entryPoint: "vertexMain",
+                buffers: [vertexBufferLayout]
+            },
+            fragment: {
+                module: cellShaderModule,
+                entryPoint: "fragmentMain",
+                targets: [{
+                    format: canvasFormat
+                }]
+            }
+        });
+
+        const simulationPipeline = device.createComputePipeline({
+            label: "simulation pipeline",
+            layout: pipelineLayout,
+            compute: {
+                module: simulationShaderModule,
+                entryPoint: "computeMain"
+            }
+        });
+
         //you can't change the resources that a bind group points to after it's been created, but you can change the contents of those resources
         //you can for example change the uniform buffer to contain a new grid size which is reflected in future draw calls using this bind group
 
         context.configure({
             device,
-            format: canvasFormat,//format refers to the texture format that the context should use
+            format: canvasFormat//format refers to the texture format that the context should use
         });
         // //clearing the canvas with a color
         // //to do anything with the GPU you need to provide commands to the GPU telling it what to do.
@@ -259,19 +352,25 @@
 
         //moving all rendering code into a function
         function updateGrid(){
+            const encoder = device.createCommandEncoder();
+            const computePass = encoder.beginComputePass();
+            computePass.setPipeline(simulationPipeline);
+            computePass.setBindGroup(0, bindGroups[step % 2]);
+            const workGroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
+            computePass.dispatchWorkgroups(workGroupCount, workGroupCount);
+            computePass.end();
             step++;//increment step count
             //start a render pass
-            const encoder = device.createCommandEncoder();
             const pass = encoder.beginRenderPass({
                 colorAttachments: [{
                     view: context.getCurrentTexture().createView(),
                     clearValue: {r: 0, g: 0, b: 0, a: 0.5},
                     loadOp: "clear",
-                    storeOp: "store",
-                }],
+                    storeOp: "store"
+                }]
             });
             //draw the grid taking into account current state
-            pass.setPipeline(renderPipeline);
+            pass.setPipeline(cellPipeline);
             pass.setBindGroup(0, bindGroups[step % 2]);
             pass.setVertexBuffer(0, vertexBuffer);
             pass.draw(vertices.length / 2, GRID_SIZE*GRID_SIZE);
